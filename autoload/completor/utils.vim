@@ -10,7 +10,6 @@ endfunction
 
 function! completor#utils#get_completer(ft, inputted)
 Py << EOF
-import completor, vim
 args = vim.bindeval('a:')
 c = completor.load_completer(args['ft'], args['inputted'])
 info = [c.format_cmd(), c.filetype, c.daemon, c.sync] if c else []
@@ -20,45 +19,65 @@ EOF
 endfunction
 
 
-function! completor#utils#get_completions(ft, msg, inputted)
+function! completor#utils#get_completions(msg)
 Py << EOF
-import completor, vim
-args = vim.bindeval('a:')
 c = completor.current
-result, ft, ty = ((c.get_completions(args['msg']), c.ft, c.filetype)
-                  if c else ([], args['ft'], ''))
-if not result and ty != 'common':
-  c = completor.get('common', ft, args['inputted'])
-  completor.current = c
-  result = c.get_completions(args['inputted'])
+result = c.get_completions(vim.bindeval('a:')['msg']) if c else []
 EOF
   return Pyeval('result')
 endfunction
 
 
-function! completor#utils#get_start_column()
+function! completor#utils#retrigger()
 Py << EOF
-import completor
-column = completor.current.start_column() if completor.current else -1
+c = completor.current
+info = []
+if c and c.filetype != 'common':
+  c = completor.get('common', c.ft, c.input_data)
+  completor.current = c
+  info = [c.format_cmd(), c.filetype, c.daemon, c.sync]
 EOF
-  return Pyeval('column')
+  let info = Pyeval('info')
+  if empty(info) | return | endif
+  let [cmd, ft, daemon, is_sync] = info
+  call completor#do_complete(cmd, ft, daemon, is_sync)
+endfunction
+
+
+function! completor#utils#get_start_column()
+  return Pyeval('completor.current.start_column() if completor.current else -1')
 endfunction
 
 
 function! completor#utils#daemon_request()
+  return Pyeval('completor.current.request() if completor.current else ""')
+endfunction
+
+
+function! completor#utils#add_buffer_request()
 Py << EOF
-import completor
-args = completor.current.request() if completor.current else ''
+common = completor.get('common')
+req, cmd = '', ''
+if common and common.daemon:
+  req = common.request(action='add')
+  cmd = common.format_cmd()
 EOF
-  return Pyeval('args')
+  return [Pyeval('req'), Pyeval('cmd')]
 endfunction
 
 
 function! completor#utils#message_ended(msg)
 Py << EOF
-import completor
 msg = vim.bindeval('a:')['msg']
 ended = completor.current.message_ended(msg) if completor.current else False
 EOF
   return Pyeval('ended')
+endfunction
+
+
+function! completor#utils#load()
+Py << EOF
+import completor, vim
+import completers.common
+EOF
 endfunction

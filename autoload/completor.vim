@@ -20,46 +20,65 @@ function s:completions.empty()
   return empty(self.words)
 endfunction
 
+function! s:is_common(name)
+  return a:name == 'common' || a:name == 'filename'
+endfunction
+
+
+function s:get_daemon_name(name)
+  return s:is_common(a:name) ? 'common_job' : 'job'
+endfunction
+
+
 function s:daemon.respawn(cmd, name)
+  let job_name = s:get_daemon_name(a:name)
+
   if self.status(a:name) == 'run'
-    call job_stop(self.job)
+    call job_stop(self[job_name])
   endif
 
-  let self.job = job_start(a:cmd, {
+  let self[job_name] = job_start(a:cmd, {
         \   "out_cb": {c,m->s:daemon_handler(m)},
         \   "err_io": 'out',
         \   "mode": 'nl'
         \ })
-  let self.type = a:name
+  if !s:is_common(a:name)
+    let self.type = a:name
+  endif
+
   let self.requested = v:false
   let self.t = localtime()
 endfunction
 
-function s:daemon.kill()
-  if exists('self.job') && job_status(self.job) == 'run'
+function s:daemon.kill(name)
+  let job_name = s:get_daemon_name(a:name)
+
+  if has_key(self, job_name) && job_status(self[job_name]) == 'run'
     let self.requested = v:false
-    call job_stop(self.job, 'kill')
+    call job_stop(self[job_name], 'kill')
   endif
 endfunction
 
-function s:daemon.write(data)
-  let ch = job_getchannel(self.job)
+function s:daemon.write(data, name)
+  let job_name = s:get_daemon_name(a:name)
+  let ch = job_getchannel(self[job_name])
   call ch_sendraw(ch, a:data."\n")
 endfunction
 
 function s:daemon.status(name)
-  if !exists('self.job')
+  let job_name = s:get_daemon_name(a:name)
+
+  if !has_key(self, job_name)
     return 'none'
   endif
 
-  let s = job_status(self.job)
-  if exists('self.type') && self.type != a:name
+  let s = job_status(self[job_name])
+  if job_name == 'job' && has_key(self, 'type') && self.type != a:name
     if s == 'run'
       call job_stop(self.job)
     endif
     return 'none'
   endif
-
   return s
 endfunction
 
@@ -84,12 +103,19 @@ endfunction
 
 
 function! s:trigger(msg)
+  let is_empty = v:false
+
   if !s:consistent()
     call s:completions.clear()
+    let is_empty = v:true
   else
-    call s:completions.set(completor#utils#get_completions(s:status.ft, a:msg, s:status.input))
+    call s:completions.set(completor#utils#get_completions(a:msg))
+    if s:completions.empty()
+      let is_empty = v:true
+      call completor#utils#retrigger()
+    endif
   endif
-  if s:completions.empty() | return | endif
+  if is_empty | return | endif
 
   setlocal completefunc=completor#completefunc
   setlocal completeopt-=longest
@@ -108,8 +134,8 @@ function! s:daemon_handler(msg)
   call add(s:daemon.msgs, a:msg)
 
   if completor#utils#message_ended(a:msg)
-    call s:trigger(s:daemon.msgs)
     let s:daemon.requested = v:false
+    call s:trigger(s:daemon.msgs)
   endif
 endfunction
 
@@ -140,17 +166,34 @@ function! s:process_daemon(cmd, name)
 
   if s:daemon.requested
     if localtime() - s:daemon.t > 5
-      call s:daemon.kill()
+      call s:daemon.kill(a:name)
     endif
     return
   endif
 
   let req = completor#utils#daemon_request()
   if empty(req) | return | endif
-  call s:daemon.write(req)
+  call s:daemon.write(req, a:name)
 
   let s:daemon.requested = v:true
   let s:daemon.t = localtime()
+endfunction
+
+
+function! completor#do_complete(cmd, name, daemon, is_sync)
+  if a:is_sync
+    call s:trigger(s:status.input)
+  elseif !empty(a:cmd)
+    if a:daemon
+      call s:process_daemon(a:cmd, a:name)
+    else
+      let s:job = job_start(a:cmd, {
+            \   "close_cb": {c->s:handler(c)},
+            \   "in_io": 'null',
+            \   "err_io": 'out'
+            \ })
+    endif
+  endif
 endfunction
 
 
@@ -161,20 +204,7 @@ function! s:complete()
   let info = completor#utils#get_completer(s:status.ft, s:status.input)
   if empty(info) | return | endif
   let [cmd, name, daemon, is_sync] = info
-
-  if is_sync
-    call s:trigger(s:status.input)
-  elseif !empty(cmd)
-    if daemon
-      call s:process_daemon(cmd, name)
-    else
-      let s:job = job_start(cmd, {
-            \   "close_cb": {c->s:handler(c)},
-            \   "in_io": 'null',
-            \   "err_io": 'out'
-            \ })
-    endif
-  endif
+  call completor#do_complete(cmd, name, daemon, is_sync)
 endfunction
 
 
@@ -215,12 +245,34 @@ function s:on_insert_char_pre()
 endfunction
 
 
+function! s:on_buffer()
+  if s:skip() | return | endif
+
+  let [req, cmd] = completor#utils#add_buffer_request()
+  if empty(req) || empty(cmd)
+    return
+  endif
+
+  if s:daemon.status('common') != 'run'
+    call s:daemon.respawn(cmd, 'common')
+  endif
+
+  " recheck
+  if s:daemon.status('common') == 'run'
+    call s:daemon.write(req, 'common')
+  endif
+endfunction
+
+
 function! s:set_events()
   augroup completor
     autocmd!
     autocmd TextChangedI * call s:on_text_change()
     autocmd InsertCharPre * call s:on_insert_char_pre()
+    autocmd BufWinEnter,BufWrite * call s:on_buffer()
   augroup END
+  call completor#utils#load()
+  call s:on_buffer()
 endfunction
 
 
