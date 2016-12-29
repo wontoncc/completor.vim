@@ -4,7 +4,7 @@ let s:save_cpo = &cpo
 set cpo&vim
 
 let s:char_inserted = v:false
-let s:completions = {'words': [], 'refresh': 'always'}
+let s:completions = {'words': []}
 let s:daemon = {'msgs': [], 'requested': v:false, 't': 0}
 let s:status = {'pos': [], 'nr': -1, 'input': '', 'ft': ''}
 
@@ -86,14 +86,14 @@ endfunction
 function! completor#completefunc(findstart, base)
   if a:findstart
     if s:completions.empty()
-      return -3
+      return -2
     endif
     return completor#utils#get_start_column()
   endif
 
-  let completions = copy(s:completions)
+  let words = s:completions.words
   call s:completions.clear()
-  return completions
+  return {'words': words, 'refresh': 'always'}
 endfunction
 
 
@@ -269,10 +269,15 @@ function! s:set_events()
     autocmd!
     autocmd TextChangedI * call s:on_text_change()
     autocmd InsertCharPre * call s:on_insert_char_pre()
-    autocmd BufWinEnter,BufWrite * call s:on_buffer()
   augroup END
   call completor#utils#load()
-  call s:on_buffer()
+
+  if completor#utils#is_common_daemon()
+    augroup completor
+      autocmd BufWinEnter,BufWrite * call s:on_buffer()
+    augroup END
+    call s:on_buffer()
+  endif
 endfunction
 
 
